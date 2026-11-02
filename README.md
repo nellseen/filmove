@@ -15,6 +15,9 @@
 - **Autentikasi Google Admin Terbatas**:
   - Wajib login menggunakan akun Google via Firebase Authentication popup.
   - **Otorisasi Khusus**: Hanya email pemilik terdaftar (`cristiandwihariantoro@gmail.com`) yang memiliki izin sebagai Administrator.
+- **Impor Massal (Dual Fallback Engine)**:
+  - Mendukung input banyak tautan sekaligus (*Multi-URL Paste*) maupun impor otomatis berdasarkan rentang ID saluran (*Channel ID Range*).
+  - Dilengkapi sistem **Dual Fallback**: jika link tertentu timeout atau tidak memiliki thumbnail, sistem otomatis melakukan fallback data dasar tanpa menghentikan proses impor massal, serta menyinkronkan data langsung ke Cloud Firestore.
 - **Keamanan Zero-Trust ABAC**: `firestore.rules` memblokir mutasi (create/update/delete) bagi siapa pun selain email admin terverifikasi.
 
 ---

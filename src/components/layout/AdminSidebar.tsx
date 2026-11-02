@@ -1,7 +1,7 @@
 import React from 'react';
-import { LayoutDashboard, FileText, PlusCircle } from 'lucide-react';
+import { LayoutDashboard, FileText, PlusCircle, Layers } from 'lucide-react';
 
-export type AdminTab = 'overview' | 'posts' | 'add-link';
+export type AdminTab = 'overview' | 'posts' | 'add-link' | 'bulk-import';
 
 interface AdminSidebarProps {
   currentTab: AdminTab;
@@ -33,6 +33,11 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       id: 'add-link' as AdminTab,
       label: 'Tambah Link Telegram',
       icon: PlusCircle,
+    },
+    {
+      id: 'bulk-import' as AdminTab,
+      label: 'Impor Massal',
+      icon: Layers,
     },
   ];
 

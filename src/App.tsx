@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import type { TelegramPost, TelegramMetadataPreviewResult, CatalogStats, PostStatus } from './types/post';
 import { AppHeader } from './components/layout/AppHeader';
 import { AdminSidebar, AdminTab } from './components/layout/AdminSidebar';
+import { BulkImportView } from './components/admin/BulkImportView';
 import { PostGrid } from './components/posts/PostGrid';
 import { PostDetailModal } from './components/posts/PostDetailModal';
 import { MetadataPreview } from './components/posts/MetadataPreview';
@@ -39,7 +40,8 @@ import {
   Sparkles,
   Database,
   Lock,
-  AlertTriangle
+  AlertTriangle,
+  Layers
 } from 'lucide-react';
 
 // Strictly allow only this email address to access admin mode
@@ -650,14 +652,24 @@ function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: n
                         Administrator aktif: <strong className="text-[#2563EB]">{firebaseUser?.email || AUTHORIZED_ADMIN_EMAIL}</strong>
                       </p>
                     </div>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={() => setAdminTab('add-link')}
-                      leftIcon={<Plus className="w-3.5 h-3.5" />}
-                    >
-                      Tambah Link
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setAdminTab('bulk-import')}
+                        leftIcon={<Layers className="w-3.5 h-3.5 text-[#2563EB]" />}
+                      >
+                        Impor Massal
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => setAdminTab('add-link')}
+                        leftIcon={<Plus className="w-3.5 h-3.5" />}
+                      >
+                        Tambah Link
+                      </Button>
+                    </div>
                   </div>
 
                   {/* Summary metric cards */}
@@ -1001,6 +1013,16 @@ function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: n
                     </div>
                   )}
                 </div>
+              )}
+
+              {/* TAB 4: BULK IMPORT */}
+              {adminTab === 'bulk-import' && (
+                <BulkImportView
+                  onSavePost={handleSavePost}
+                  onNavigateToPosts={() => setAdminTab('posts')}
+                  onNavigateToPublic={() => setIsAdminView(false)}
+                  adminEmail={firebaseUser?.email || AUTHORIZED_ADMIN_EMAIL}
+                />
               )}
             </div>
           </div>
