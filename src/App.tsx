@@ -275,6 +275,25 @@ function deduplicatePosts(items: TelegramPost[]): TelegramPost[] {
     addToast('info', 'Anda telah keluar dari sesi Admin.');
   };
 
+// Client-side parser for resilient instant extraction & fallback
+function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: number; normalizedUrl: string } | null {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  const trimmed = rawUrl.trim();
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.hostname.toLowerCase();
+    if (host !== 't.me' && host !== 'www.t.me') return null;
+    const match = parsed.pathname.match(/^\/([a-zA-Z0-9_]{3,})\/([0-9]+)\/?$/);
+    if (!match) return null;
+    const channel = match[1];
+    const messageId = parseInt(match[2], 10);
+    if (!channel || isNaN(messageId) || messageId <= 0) return null;
+    return { channel, messageId, normalizedUrl: `https://t.me/${channel}/${messageId}` };
+  } catch {
+    return null;
+  }
+}
+
   // Handle Telegram URL Preview Fetch
   const handleFetchPreview = async (urlToFetch?: string) => {
     const targetUrl = (urlToFetch || rawUrlInput).trim();
@@ -283,25 +302,64 @@ function deduplicatePosts(items: TelegramPost[]): TelegramPost[] {
       return;
     }
 
+    const parsedClient = parseTelegramUrlClient(targetUrl);
+    if (!parsedClient) {
+      setUrlError('Format URL tidak valid. Gunakan format postingan publik: https://t.me/<nama_channel>/<id_pesan>');
+      return;
+    }
+
     setUrlError(null);
     setIsFetchingPreview(true);
 
     try {
-      const res = await fetch('/api/v1/admin/telegram/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: targetUrl }),
-      });
-
-      const resData = await res.json();
-      if (!res.ok) {
-        setUrlError(resData.error || 'Gagal mengekstrak metadata dari link yang diberikan.');
-        return;
+      let resData: any = null;
+      try {
+        const res = await fetch('/api/v1/admin/telegram/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: parsedClient.normalizedUrl }),
+        });
+        if (res.ok) {
+          resData = await res.json();
+        }
+      } catch (e) {
+        console.warn('API preview fetch failed, using resilient fallback:', e);
       }
 
-      setPreviewResult(resData.data);
-    } catch (err: any) {
-      setUrlError('Terjadi kesalahan jaringan saat mengekstrak pratinjau.');
+      if (resData?.data) {
+        setPreviewResult(resData.data);
+      } else {
+        // Resilient fallback: Never block admin! Advance to Step 2 so admin can fill in metadata manually
+        setPreviewResult({
+          sourceUrl: parsedClient.normalizedUrl,
+          channelUsername: parsedClient.channel,
+          channelTitle: parsedClient.channel,
+          messageId: parsedClient.messageId,
+          title: `@${parsedClient.channel} - Post #${parsedClient.messageId}`,
+          description: null,
+          thumbnailUrl: null,
+          publishedAtSource: new Date().toISOString(),
+          extractionStatus: 'unavailable',
+          metadataSource: 'manual',
+          message: 'Metadata otomatis tidak dapat dimuat dari Telegram. Silakan lengkapi Judul dan Sinopsis secara manual.',
+        });
+        addToast('info', 'Metadata otomatis tidak dapat dimuat. Anda dapat melengkapi informasi secara manual.');
+      }
+    } catch {
+      // Fallback
+      setPreviewResult({
+        sourceUrl: parsedClient.normalizedUrl,
+        channelUsername: parsedClient.channel,
+        channelTitle: parsedClient.channel,
+        messageId: parsedClient.messageId,
+        title: `@${parsedClient.channel} - Post #${parsedClient.messageId}`,
+        description: null,
+        thumbnailUrl: null,
+        publishedAtSource: new Date().toISOString(),
+        extractionStatus: 'unavailable',
+        metadataSource: 'manual',
+        message: 'Silakan isi judul dan keterangan secara manual.',
+      });
     } finally {
       setIsFetchingPreview(false);
     }

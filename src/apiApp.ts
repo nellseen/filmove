@@ -273,8 +273,8 @@ apiApp.get('/api/v1/stats', (_req: Request, res: Response) => {
 });
 
 // POST /api/v1/admin/telegram/preview
-apiApp.post('/api/v1/admin/telegram/preview', async (req: Request, res: Response) => {
-  const { url } = req.body;
+const handlePreviewRequest = async (req: Request, res: Response) => {
+  const { url } = req.body || {};
   if (!url || typeof url !== 'string') {
     res.status(400).json({ error: 'URL Telegram wajib diisi' });
     return;
@@ -290,7 +290,12 @@ apiApp.post('/api/v1/admin/telegram/preview', async (req: Request, res: Response
 
   const preview = await fetchTelegramMetadata(parsed.channel, parsed.messageId, parsed.normalizedUrl);
   res.json({ data: preview });
-});
+};
+
+apiApp.post('/api/v1/admin/telegram/preview', handlePreviewRequest);
+apiApp.post('/api/telegram/preview', handlePreviewRequest);
+apiApp.post('/api/preview', handlePreviewRequest);
+apiApp.post('/preview', handlePreviewRequest);
 
 // POST /api/v1/admin/posts
 apiApp.post('/api/v1/admin/posts', (req: Request, res: Response) => {
