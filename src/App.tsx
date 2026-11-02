@@ -21,7 +21,7 @@ import {
   savePostToFirestore, 
   updatePostInFirestore, 
   deletePostFromFirestore,
-  seedFirestoreIfEmpty,
+  purgeAllDummyPosts,
   signInWithGoogle,
   signOutAdmin,
   subscribeToAuthState
@@ -106,7 +106,7 @@ export function App() {
   useEffect(() => {
     testFirestoreConnection().then(() => {
       setIsFirestoreConnected(true);
-      seedFirestoreIfEmpty();
+      purgeAllDummyPosts();
     });
 
     const unsubscribeAuth = subscribeToAuthState(async (user) => {
@@ -134,25 +134,21 @@ export function App() {
     };
   }, []);
 
-  // 2. Real-time Firestore subscription with local API fallback
+  // 2. Real-time Firestore subscription
   useEffect(() => {
     setIsLoading(true);
     let unsubscribeFirestore: (() => void) | undefined;
 
     try {
       unsubscribeFirestore = subscribeToPosts((firestorePosts) => {
-        if (firestorePosts && firestorePosts.length > 0) {
-          setPosts(firestorePosts);
-          const uniqueCh = Array.from(new Set(firestorePosts.map((p) => p.channelUsername)));
-          setChannels(uniqueCh);
-          setIsLoading(false);
-          updateComputedStats(firestorePosts);
-        } else {
-          fetchFromApi();
-        }
+        setPosts(firestorePosts || []);
+        const uniqueCh = Array.from(new Set((firestorePosts || []).map((p) => p.channelUsername)));
+        setChannels(uniqueCh);
+        setIsLoading(false);
+        updateComputedStats(firestorePosts || []);
       }, isAdminView);
     } catch (err) {
-      console.warn('[Firestore] Using fallback API:', err);
+      console.warn('[Firestore] error:', err);
       fetchFromApi();
     }
 
