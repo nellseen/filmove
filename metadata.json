@@ -1,0 +1,8 @@
+{
+  "name": "Filmove - Telegram Link Catalog",
+  "description": "Minimalist and content-first Telegram post catalog. Paste public Telegram posts, extract metadata previews, and browse curated video links directly to the original post without re-hosting.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

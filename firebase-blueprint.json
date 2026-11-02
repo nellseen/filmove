@@ -1,0 +1,125 @@
+{
+  "entities": {
+    "Post": {
+      "title": "Post",
+      "description": "Telegram catalog video/post item with validated metadata and source URL",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the post",
+          "maxLength": 128
+        },
+        "sourceUrl": {
+          "type": "string",
+          "description": "Canonical Telegram post URL (e.g. https://t.me/channel/123)",
+          "maxLength": 500,
+          "pattern": "^https?://(www\\.)?t\\.me/[a-zA-Z0-9_]{3,}/[0-9]+.*$"
+        },
+        "channelUsername": {
+          "type": "string",
+          "description": "Telegram public channel username without @ symbol",
+          "maxLength": 64
+        },
+        "channelTitle": {
+          "type": "string",
+          "description": "Display name of the Telegram channel",
+          "maxLength": 128
+        },
+        "messageId": {
+          "type": "integer",
+          "description": "Numeric ID of the post inside the Telegram channel"
+        },
+        "title": {
+          "type": "string",
+          "description": "Confirmed title of the catalog item",
+          "maxLength": 200,
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "description": "Synopsis or caption of the Telegram post",
+          "maxLength": 2000
+        },
+        "thumbnailUrl": {
+          "type": "string",
+          "description": "Direct HTTPS URL to external thumbnail image",
+          "maxLength": 1000
+        },
+        "publishedAtSource": {
+          "type": "string",
+          "description": "ISO 8601 publication timestamp from Telegram source",
+          "maxLength": 64
+        },
+        "metadataSource": {
+          "type": "string",
+          "description": "Source origin of the metadata",
+          "enum": ["telegram-preview", "manual", "mixed"]
+        },
+        "status": {
+          "type": "string",
+          "description": "Publishing status in the public catalog",
+          "enum": ["draft", "published", "archived"]
+        },
+        "viewsCount": {
+          "type": "integer",
+          "description": "Impression or views count"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO 8601 creation timestamp",
+          "maxLength": 64
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO 8601 last update timestamp",
+          "maxLength": 64
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "User email or identifier of creator",
+          "maxLength": 128
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "User email or identifier of updater",
+          "maxLength": 128
+        }
+      },
+      "required": ["sourceUrl", "channelUsername", "messageId", "title", "status"]
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "Administrator profile with catalog management permissions",
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["admin"]
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": ["role", "active"]
+    }
+  },
+  "firestore": {
+    "/posts/{postId}": {
+      "schema": "Post",
+      "description": "Catalog of curated Telegram movie and video links"
+    },
+    "/admins/{adminId}": {
+      "schema": "Admin",
+      "description": "Admin identity and authorization mappings"
+    }
+  }
+}
