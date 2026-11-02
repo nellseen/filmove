@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import type { TelegramPost, PostStatus } from '../../types/post';
 import { Field } from '../ui/Field';
 import { Input } from '../ui/Input';
@@ -22,12 +22,14 @@ interface BulkImportItemStatus {
   url: string;
   channel: string;
   messageId: number;
-  status: 'pending' | 'processing' | 'success-full' | 'success-fallback' | 'error';
+  status: 'pending' | 'processing' | 'success-full' | 'success-fallback' | 'duplicate' | 'error';
   title?: string;
   errorMessage?: string;
 }
 
 interface BulkImportViewProps {
+  existingPosts: TelegramPost[];
+  onImportStateChange: (isImporting: boolean) => void;
   onSavePost: (payload: {
     sourceUrl: string;
     title: string;
@@ -44,6 +46,8 @@ interface BulkImportViewProps {
 }
 
 export const BulkImportView: React.FC<BulkImportViewProps> = ({
+  existingPosts,
+  onImportStateChange,
   onSavePost,
   onNavigateToPosts,
   onNavigateToPublic,
@@ -57,10 +61,11 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
   const [targetStatus, setTargetStatus] = useState<'draft' | 'published'>('published');
 
   const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [shouldStop, setShouldStop] = useState<boolean>(false);
   const [progressItems, setProgressItems] = useState<BulkImportItemStatus[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [completed, setCompleted] = useState<boolean>(false);
+  const stopRequestedRef = useRef(false);
+  const progressItemsRef = useRef<BulkImportItemStatus[]>([]);
 
   // Parse URLs helper
   const extractUrlsFromText = (text: string): { channel: string; messageId: number; url: string }[] => {
@@ -74,12 +79,14 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
         if (parsed.hostname.toLowerCase() === 't.me' || parsed.hostname.toLowerCase() === 'www.t.me') {
           const match = parsed.pathname.match(/^\/([a-zA-Z0-9_]{3,})\/([0-9]+)\/?$/);
           if (match) {
-            const canonical = `https://t.me/${match[1]}/${match[2]}`;
+            const channel = match[1].toLowerCase();
+            const messageId = parseInt(match[2], 10);
+            const canonical = `https://t.me/${channel}/${messageId}`;
             if (!seen.has(canonical)) {
               seen.add(canonical);
               results.push({
-                channel: match[1],
-                messageId: parseInt(match[2], 10),
+                channel,
+                messageId,
                 url: canonical,
               });
             }
@@ -95,49 +102,67 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
   // Generate URLs from range
   const generateUrlsFromRange = (): { channel: string; messageId: number; url: string }[] => {
     const cleanCh = channelInput.replace(/^@/, '').trim();
-    if (!cleanCh || startId <= 0 || endId < startId) return [];
-    const maxItems = 30; // Protect from huge loops
-    const actualEnd = Math.min(endId, startId + maxItems - 1);
+    let channel = cleanCh;
+    try {
+      if (cleanCh.includes('://')) {
+        const parsed = new URL(cleanCh);
+        if (!['t.me', 'www.t.me'].includes(parsed.hostname.toLowerCase())) return [];
+        channel = parsed.pathname.split('/').filter(Boolean)[0] || '';
+      }
+    } catch {
+      return [];
+    }
+    channel = channel.toLowerCase();
+    if (!/^[a-zA-Z0-9_]{3,}$/.test(channel) || !Number.isSafeInteger(startId) || !Number.isSafeInteger(endId) || startId <= 0 || endId < startId) return [];
     const results: { channel: string; messageId: number; url: string }[] = [];
 
-    for (let id = startId; id <= actualEnd; id++) {
+    for (let id = startId; id <= endId; id++) {
       results.push({
-        channel: cleanCh,
+        channel,
         messageId: id,
-        url: `https://t.me/${cleanCh}/${id}`,
+        url: `https://t.me/${channel}/${id}`,
       });
     }
     return results;
   };
 
-  const parsedItems = importMode === 'urls' ? extractUrlsFromText(rawTextUrls) : generateUrlsFromRange();
+  const parsedItems = useMemo(
+    () => importMode === 'urls' ? extractUrlsFromText(rawTextUrls) : generateUrlsFromRange(),
+    [importMode, rawTextUrls, channelInput, startId, endId]
+  );
 
   // Execute bulk import with dual fallback
   const startBulkImport = async () => {
     if (parsedItems.length === 0) return;
 
     setIsRunning(true);
-    setShouldStop(false);
+    onImportStateChange(true);
+    stopRequestedRef.current = false;
     setCompleted(false);
 
-    const initialQueue: BulkImportItemStatus[] = parsedItems.map((item) => ({
-      url: item.url,
-      channel: item.channel,
-      messageId: item.messageId,
-      status: 'pending',
-    }));
+    const existingKeys = new Set(existingPosts.flatMap((post) => [
+      `${post.channelUsername?.toLowerCase()}/${post.messageId}`,
+      post.sourceUrl?.trim().toLowerCase() || '',
+    ]));
+    const initialQueue: BulkImportItemStatus[] = parsedItems.map((item) => {
+      const key = `${item.channel.toLowerCase()}/${item.messageId}`;
+      const duplicate = existingKeys.has(key) || existingKeys.has(item.url.toLowerCase());
+      return {
+        url: item.url,
+        channel: item.channel,
+        messageId: item.messageId,
+        status: duplicate ? 'duplicate' : 'pending',
+        errorMessage: duplicate ? 'Link sudah ada, dilewati.' : undefined,
+      };
+    });
+    progressItemsRef.current = initialQueue;
     setProgressItems(initialQueue);
+    const workQueue = initialQueue.flatMap((item, index) => item.status === 'pending' ? [{ item, index }] : []);
 
-    for (let i = 0; i < initialQueue.length; i++) {
-      if (shouldStop) break;
-      setCurrentIndex(i);
-
-      // Mark processing
-      setProgressItems((prev) =>
-        prev.map((item, idx) => (idx === i ? { ...item, status: 'processing' } : item))
-      );
-
-      const target = initialQueue[i];
+    for (let processed = 0; processed < workQueue.length; processed++) {
+      if (stopRequestedRef.current) break;
+      const { item: target, index } = workQueue[processed];
+      progressItemsRef.current[index] = { ...target, status: 'processing' };
       let extractedTitle = `@${target.channel} - Post #${target.messageId}`;
       let extractedDesc: string | null = null;
       let extractedThumb: string | null = null;
@@ -145,11 +170,14 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
       let wasFullExtraction = false;
 
       // 1. Try Primary Extraction via Telegram Preview API
+      const previewController = new AbortController();
+      const previewTimeout = setTimeout(() => previewController.abort(), 10000);
       try {
         const res = await fetch('/api/v1/admin/telegram/preview', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: target.url }),
+          signal: previewController.signal,
         });
 
         if (res.ok) {
@@ -164,6 +192,8 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
         }
       } catch (err) {
         console.warn(`[BulkImport] Extraction fallback for ${target.url}:`, err);
+      } finally {
+        clearTimeout(previewTimeout);
       }
 
       // 2. Save via Storage Engine (Firestore & Sync)
@@ -179,42 +209,42 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
           status: targetStatus,
         });
 
-        setProgressItems((prev) =>
-          prev.map((item, idx) =>
-            idx === i
-              ? {
-                  ...item,
-                  status: wasFullExtraction ? 'success-full' : 'success-fallback',
-                  title: extractedTitle,
-                }
-              : item
-          )
-        );
+        progressItemsRef.current[index] = {
+          ...progressItemsRef.current[index],
+          status: wasFullExtraction ? 'success-full' : 'success-fallback',
+          title: extractedTitle,
+        };
       } catch (saveError: any) {
-        setProgressItems((prev) =>
-          prev.map((item, idx) =>
-            idx === i
-              ? {
-                  ...item,
-                  status: 'error',
-                  errorMessage: saveError?.message || 'Gagal menyimpan',
-                }
-              : item
-          )
-        );
+        const isDuplicate = saveError instanceof Error && saveError.message.includes('sudah ada');
+        progressItemsRef.current[index] = {
+          ...progressItemsRef.current[index],
+          status: isDuplicate ? 'duplicate' : 'error',
+          errorMessage: isDuplicate ? 'Link sudah ada, dilewati.' : saveError?.message || 'Gagal menyimpan',
+        };
       }
 
+      if ((processed + 1) % 25 === 0 || processed === workQueue.length - 1) {
+        setCurrentIndex(processed + 1);
+        setProgressItems([...progressItemsRef.current]);
+      }
       // Short delay between items to be gentle with network
       await new Promise((r) => setTimeout(r, 350));
     }
 
+    setCurrentIndex(workQueue.length);
+    setProgressItems([...progressItemsRef.current]);
     setIsRunning(false);
     setCompleted(true);
+    onImportStateChange(false);
   };
 
   const successCount = progressItems.filter(
     (p) => p.status === 'success-full' || p.status === 'success-fallback'
   ).length;
+  const duplicateCount = progressItems.filter((item) => item.status === 'duplicate').length;
+  const errorCount = progressItems.filter((item) => item.status === 'error').length;
+  const visibleProgressItems = progressItems.slice(-100);
+  const visibleOffset = progressItems.length - visibleProgressItems.length;
 
   return (
     <div className="space-y-6">
@@ -286,15 +316,14 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
             /* Mode 2: Channel Range */
             <div className="space-y-4">
               <Field
-                label="Nama / Username Saluran"
+                label="Link atau Username Saluran"
                 required
-                helperText="Nama channel publik Telegram tanpa spasi (contoh: lagiviralnih1)"
+                helperText="Tempel link channel atau username, lalu tentukan rentang ID posting yang ingin diimpor."
               >
                 <Input
                   value={channelInput}
                   onChange={(e) => setChannelInput(e.target.value)}
-                  placeholder="lagiviralnih1"
-                  leftElement={<span className="text-xs font-semibold text-[#68707A]">@</span>}
+                  placeholder="https://t.me/lagiviralnih1"
                 />
               </Field>
 
@@ -307,7 +336,7 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
                     min={1}
                   />
                 </Field>
-                <Field label="ID Pesan Selesai" required helperText="Maksimal 30 postingan per batch">
+                <Field label="ID Pesan Selesai" required helperText="Semua ID dari rentang ini akan diproses">
                   <Input
                     type="number"
                     value={endId}
@@ -361,14 +390,14 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
                 {completed ? 'Impor Massal Selesai' : 'Sedang Memproses Impor Massal...'}
               </h3>
               <p className="text-xs text-[#68707A] mt-0.5">
-                {successCount} dari {progressItems.length} postingan berhasil disimpan ke Cloud Firestore.
+                {successCount} disimpan, {duplicateCount} duplikat dilewati, {errorCount} gagal dari {progressItems.length} tautan.
               </p>
             </div>
             {isRunning && (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setShouldStop(true)}
+                onClick={() => { stopRequestedRef.current = true; }}
                 leftIcon={<StopCircle className="w-3.5 h-3.5 text-[#DC2626]" />}
               >
                 Hentikan
@@ -381,7 +410,7 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
             <div
               className="bg-[#2563EB] h-2 transition-all duration-300"
               style={{
-                width: `${Math.round(((currentIndex + (completed ? 1 : 0)) / Math.max(1, progressItems.length)) * 100)}%`,
+                width: `${completed ? 100 : Math.round((currentIndex / Math.max(1, progressItems.length)) * 100)}%`,
               }}
             />
           </div>
@@ -398,9 +427,9 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#E5E8EC]">
-                {progressItems.map((item, idx) => (
+                {visibleProgressItems.map((item, idx) => (
                   <tr key={item.url} className="hover:bg-[#F7F8FA]/60">
-                    <td className="px-3.5 py-2 font-mono text-[11px] text-[#68707A]">{idx + 1}</td>
+                    <td className="px-3.5 py-2 font-mono text-[11px] text-[#68707A]">{visibleOffset + idx + 1}</td>
                     <td className="px-3.5 py-2 font-mono text-[11px] max-w-[200px] truncate text-[#17191C]">
                       {item.url}
                     </td>
@@ -424,6 +453,12 @@ export const BulkImportView: React.FC<BulkImportViewProps> = ({
                         <span className="inline-flex items-center gap-1 text-[11px] text-[#A16207] font-medium bg-amber-50 px-2 py-0.5 rounded">
                           <Sparkles className="w-3 h-3" />
                           <span>Fallback Otomatis</span>
+                        </span>
+                      )}
+                      {item.status === 'duplicate' && (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-[#68707A] font-medium bg-[#F1F3F5] px-2 py-0.5 rounded">
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Duplikat, dilewati</span>
                         </span>
                       )}
                       {item.status === 'error' && (

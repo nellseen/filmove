@@ -244,15 +244,11 @@ export default async function handler(req: any, res: any) {
       return;
     }
 
-    // Default GET response (posts/status)
-    res.statusCode = 200;
+    // Catalog data is served directly through Firestore; this function only handles preview requests.
+    res.statusCode = 404;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({
-      status: 'ok',
-      service: 'filmove-api',
-      data: [],
-      pagination: { total: 0, page: 1, limit: 12, totalPages: 1, hasNext: false, hasPrev: false },
-      channels: [],
+      error: 'API route tidak ditemukan.',
     }));
   } catch (err: any) {
     res.statusCode = 500;

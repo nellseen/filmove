@@ -1,14 +1,11 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import type { TelegramPost, TelegramMetadataPreviewResult, CatalogStats, PostStatus } from './types/post';
+import type { TelegramMetadataPreviewResult } from './types/post';
 
 const apiApp = express();
 
 apiApp.use(cors());
 apiApp.use(express.json());
-
-// In-memory data store for fallback/caching
-let postsStore: TelegramPost[] = [];
 
 // Helper: validate and normalize Telegram post URL
 export function parseAndValidateTelegramUrl(rawUrl: string): { channel: string; messageId: number; normalizedUrl: string } | null {
@@ -189,89 +186,7 @@ export async function fetchTelegramMetadata(channel: string, messageId: number, 
   }
 }
 
-// ----------------------------------------------------
-// REST API v1 Endpoints
-// ----------------------------------------------------
-
-// GET /api/v1/posts
-apiApp.get('/api/v1/posts', (req: Request, res: Response) => {
-  const { status, search, channel, page = '1', limit = '12' } = req.query;
-  const p = Math.max(1, parseInt(page as string, 10) || 1);
-  const l = Math.max(1, Math.min(50, parseInt(limit as string, 10) || 12));
-
-  let filtered = [...postsStore];
-
-  if (status && typeof status === 'string' && status !== 'all') {
-    filtered = filtered.filter(item => item.status === status);
-  } else if (!status) {
-    filtered = filtered.filter(item => item.status === 'published');
-  }
-
-  if (channel && typeof channel === 'string' && channel.trim() !== '') {
-    filtered = filtered.filter(item => item.channelUsername.toLowerCase() === channel.toLowerCase());
-  }
-
-  if (search && typeof search === 'string' && search.trim() !== '') {
-    const q = search.toLowerCase().trim();
-    filtered = filtered.filter(item => 
-      item.title.toLowerCase().includes(q) ||
-      (item.description && item.description.toLowerCase().includes(q)) ||
-      item.channelUsername.toLowerCase().includes(q) ||
-      (item.channelTitle && item.channelTitle.toLowerCase().includes(q))
-    );
-  }
-
-  filtered.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-
-  const total = filtered.length;
-  const totalPages = Math.ceil(total / l) || 1;
-  const startIndex = (p - 1) * l;
-  const items = filtered.slice(startIndex, startIndex + l);
-  const channels = Array.from(new Set(postsStore.map(p => p.channelUsername)));
-
-  res.json({
-    data: items,
-    pagination: {
-      total,
-      page: p,
-      limit: l,
-      totalPages,
-      hasNext: p < totalPages,
-      hasPrev: p > 1,
-    },
-    channels,
-  });
-});
-
-// GET /api/v1/posts/:id
-apiApp.get('/api/v1/posts/:id', (req: Request, res: Response) => {
-  const post = postsStore.find(p => p.id === req.params.id);
-  if (!post) {
-    res.status(404).json({ error: 'Postingan tidak ditemukan' });
-    return;
-  }
-  res.json({ data: post });
-});
-
-// GET /api/v1/stats
-apiApp.get('/api/v1/stats', (_req: Request, res: Response) => {
-  const totalPosts = postsStore.length;
-  const publishedPosts = postsStore.filter(p => p.status === 'published').length;
-  const draftPosts = postsStore.filter(p => p.status === 'draft').length;
-  const archivedPosts = postsStore.filter(p => p.status === 'archived').length;
-  const uniqueChannels = new Set(postsStore.map(p => p.channelUsername)).size;
-
-  const stats: CatalogStats = {
-    totalPosts,
-    publishedPosts,
-    draftPosts,
-    archivedPosts,
-    uniqueChannels,
-  };
-
-  res.json({ data: stats });
-});
-
+// Telegram preview endpoint. Catalog writes use Firestore Security Rules directly.
 // POST /api/v1/admin/telegram/preview
 const handlePreviewRequest = async (req: Request, res: Response) => {
   const { url } = req.body || {};
@@ -296,116 +211,5 @@ apiApp.post('/api/v1/admin/telegram/preview', handlePreviewRequest);
 apiApp.post('/api/telegram/preview', handlePreviewRequest);
 apiApp.post('/api/preview', handlePreviewRequest);
 apiApp.post('/preview', handlePreviewRequest);
-
-// POST /api/v1/admin/posts
-apiApp.post('/api/v1/admin/posts', (req: Request, res: Response) => {
-  const { sourceUrl, title, description, thumbnailUrl, channelUsername, channelTitle, messageId, status = 'draft', metadataSource = 'manual' } = req.body;
-
-  if (!sourceUrl || !title || typeof title !== 'string' || title.trim() === '') {
-    res.status(400).json({ error: 'URL Telegram dan Judul postingan wajib diisi sebelum menyimpan' });
-    return;
-  }
-
-  const parsed = parseAndValidateTelegramUrl(sourceUrl);
-  if (!parsed) {
-    res.status(400).json({ error: 'URL Telegram tidak valid' });
-    return;
-  }
-
-  const newPost: TelegramPost = {
-    id: req.body.id || `post-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-    sourceUrl: parsed.normalizedUrl,
-    channelUsername: channelUsername || parsed.channel,
-    channelTitle: channelTitle || channelUsername || parsed.channel,
-    messageId: messageId || parsed.messageId,
-    title: title.trim(),
-    description: description ? description.trim() : null,
-    thumbnailUrl: thumbnailUrl && typeof thumbnailUrl === 'string' && thumbnailUrl.trim().startsWith('http') ? thumbnailUrl.trim() : null,
-    publishedAtSource: new Date().toISOString(),
-    metadataSource: metadataSource as any,
-    status: (status === 'published' ? 'published' : 'draft') as PostStatus,
-    viewsCount: 0,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    createdBy: 'admin@filmove.app',
-    updatedBy: 'admin@filmove.app',
-  };
-
-  postsStore.unshift(newPost);
-  res.status(201).json({ data: newPost, message: 'Postingan berhasil disimpan' });
-});
-
-// PATCH /api/v1/admin/posts/:id
-apiApp.patch('/api/v1/admin/posts/:id', (req: Request, res: Response) => {
-  const postIndex = postsStore.findIndex(p => p.id === req.params.id);
-  if (postIndex === -1) {
-    res.status(404).json({ error: 'Postingan tidak ditemukan' });
-    return;
-  }
-
-  const current = postsStore[postIndex];
-  const { title, description, thumbnailUrl, channelTitle, status } = req.body;
-
-  if (title !== undefined && (!title || typeof title !== 'string' || title.trim() === '')) {
-    res.status(400).json({ error: 'Judul tidak boleh kosong' });
-    return;
-  }
-
-  const updated: TelegramPost = {
-    ...current,
-    title: title !== undefined ? title.trim() : current.title,
-    description: description !== undefined ? (description ? description.trim() : null) : current.description,
-    thumbnailUrl: thumbnailUrl !== undefined ? (thumbnailUrl ? thumbnailUrl.trim() : null) : current.thumbnailUrl,
-    channelTitle: channelTitle !== undefined ? channelTitle.trim() : current.channelTitle,
-    status: status !== undefined ? status : current.status,
-    metadataSource: 'mixed',
-    updatedAt: new Date().toISOString(),
-  };
-
-  postsStore[postIndex] = updated;
-  res.json({ data: updated, message: 'Postingan berhasil diperbarui' });
-});
-
-// POST /api/v1/admin/posts/:id/publish
-apiApp.post('/api/v1/admin/posts/:id/publish', (req: Request, res: Response) => {
-  const post = postsStore.find(p => p.id === req.params.id);
-  if (!post) {
-    res.status(404).json({ error: 'Postingan tidak ditemukan' });
-    return;
-  }
-  if (!post.title || post.title.trim() === '') {
-    res.status(400).json({ error: 'Postingan memerlukan judul sebelum dipublikasikan' });
-    return;
-  }
-
-  post.status = 'published';
-  post.updatedAt = new Date().toISOString();
-  res.json({ data: post, message: 'Postingan berhasil dipublikasikan ke katalog' });
-});
-
-// POST /api/v1/admin/posts/:id/unpublish
-apiApp.post('/api/v1/admin/posts/:id/unpublish', (req: Request, res: Response) => {
-  const post = postsStore.find(p => p.id === req.params.id);
-  if (!post) {
-    res.status(404).json({ error: 'Postingan tidak ditemukan' });
-    return;
-  }
-
-  post.status = 'draft';
-  post.updatedAt = new Date().toISOString();
-  res.json({ data: post, message: 'Status diubah menjadi draf' });
-});
-
-// DELETE /api/v1/admin/posts/:id
-apiApp.delete('/api/v1/admin/posts/:id', (req: Request, res: Response) => {
-  const postIndex = postsStore.findIndex(p => p.id === req.params.id);
-  if (postIndex === -1) {
-    res.status(404).json({ error: 'Postingan tidak ditemukan' });
-    return;
-  }
-
-  const removed = postsStore.splice(postIndex, 1)[0];
-  res.json({ data: removed, message: 'Postingan berhasil dihapus' });
-});
 
 export default apiApp;

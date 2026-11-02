@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { TelegramPost, TelegramMetadataPreviewResult, CatalogStats, PostStatus } from './types/post';
 import { AppHeader } from './components/layout/AppHeader';
 import { AdminSidebar, AdminTab } from './components/layout/AdminSidebar';
@@ -22,7 +22,8 @@ import {
   savePostToFirestore, 
   updatePostInFirestore, 
   deletePostFromFirestore,
-  purgeAllDummyPosts,
+  deletePostsFromFirestore,
+  DuplicatePostError,
   signInWithGoogle,
   signOutAdmin,
   subscribeToAuthState
@@ -48,6 +49,8 @@ import {
 const AUTHORIZED_ADMIN_EMAIL = 'cristiandwihariantoro@gmail.com';
 
 export function App() {
+  const isBulkImportingRef = useRef(false);
+  const latestFirestorePostsRef = useRef<TelegramPost[]>([]);
   // Navigation & Authentication state
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(false);
@@ -73,6 +76,9 @@ export function App() {
   const [editingPost, setEditingPost] = useState<TelegramPost | null>(null);
   const [isLoginOpen, setIsLoginOpen] = useState<boolean>(false);
   const [deleteCandidate, setDeleteCandidate] = useState<TelegramPost | null>(null);
+  const [selectedPostIds, setSelectedPostIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   // Add Link State
   const [rawUrlInput, setRawUrlInput] = useState<string>('');
@@ -106,9 +112,8 @@ export function App() {
 
   // 1. Initial connection test and strict auth subscription
   useEffect(() => {
-    testFirestoreConnection().then(() => {
-      setIsFirestoreConnected(true);
-      purgeAllDummyPosts();
+    testFirestoreConnection().then((connected) => {
+      setIsFirestoreConnected(connected);
     });
 
     const unsubscribeAuth = subscribeToAuthState(async (user) => {
@@ -154,6 +159,11 @@ function deduplicatePosts(items: TelegramPost[]): TelegramPost[] {
 
     try {
       unsubscribeFirestore = subscribeToPosts((firestorePosts) => {
+        latestFirestorePostsRef.current = firestorePosts || [];
+        if (isBulkImportingRef.current) {
+          setIsLoading(false);
+          return;
+        }
         const unique = deduplicatePosts(firestorePosts || []);
         setPosts(unique);
         const uniqueCh = Array.from(new Set(unique.map((p) => p.channelUsername)));
@@ -163,7 +173,7 @@ function deduplicatePosts(items: TelegramPost[]): TelegramPost[] {
       }, isAdminView);
     } catch (err) {
       console.warn('[Firestore] error:', err);
-      fetchFromApi();
+      setIsLoading(false);
     }
 
     return () => {
@@ -179,24 +189,6 @@ function deduplicatePosts(items: TelegramPost[]): TelegramPost[] {
     const archivedPosts = uniqueList.filter((p) => p.status === 'archived').length;
     const uniqueChannels = new Set(uniqueList.map((p) => p.channelUsername)).size;
     setStats({ totalPosts, publishedPosts, draftPosts, archivedPosts, uniqueChannels });
-  };
-
-  // Fallback API fetch
-  const fetchFromApi = async () => {
-    try {
-      const res = await fetch('/api/v1/posts?status=all');
-      if (res.ok) {
-        const json = await res.json();
-        const unique = deduplicatePosts(json.data || []);
-        setPosts(unique);
-        if (json.channels) setChannels(json.channels);
-        updateComputedStats(unique);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsLoading(false);
-    }
   };
 
   // Strictly deduplicated list of posts
@@ -290,7 +282,8 @@ function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: n
     const channel = match[1];
     const messageId = parseInt(match[2], 10);
     if (!channel || isNaN(messageId) || messageId <= 0) return null;
-    return { channel, messageId, normalizedUrl: `https://t.me/${channel}/${messageId}` };
+    const normalizedChannel = channel.toLowerCase();
+    return { channel: normalizedChannel, messageId, normalizedUrl: `https://t.me/${normalizedChannel}/${messageId}` };
   } catch {
     return null;
   }
@@ -377,11 +370,18 @@ function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: n
     channelTitle: string;
     messageId: number;
     status: 'draft' | 'published';
-  }) => {
+  }, updateUi = true) => {
     try {
-      setIsSavingPost(true);
+      if (updateUi) setIsSavingPost(true);
+      const normalizedSourceUrl = payload.sourceUrl.trim().toLowerCase();
+      if (posts.some((post) =>
+        post.sourceUrl?.trim().toLowerCase() === normalizedSourceUrl ||
+        (post.channelUsername?.toLowerCase() === payload.channelUsername.toLowerCase() && post.messageId === payload.messageId)
+      )) {
+        throw new DuplicatePostError();
+      }
       const newPost: TelegramPost = {
-        id: `post-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+        id: `tg-${payload.channelUsername.toLowerCase()}-${payload.messageId}`,
         sourceUrl: payload.sourceUrl,
         channelUsername: payload.channelUsername,
         channelTitle: payload.channelTitle || payload.channelUsername,
@@ -402,35 +402,30 @@ function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: n
       // 1. Save directly to Firestore
       await savePostToFirestore(newPost);
 
-      // 2. Also keep backend in sync
-      try {
-        await fetch('/api/v1/admin/posts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, id: newPost.id }),
-        });
-      } catch (err) {
-        // quiet fallback
-      }
-
       // Update state with deduplication to prevent duplicate key warning
-      setPosts((prev) => deduplicatePosts([newPost, ...prev]));
+      if (updateUi) setPosts((prev) => deduplicatePosts([newPost, ...prev]));
 
-      addToast(
+      if (updateUi) addToast(
         'success',
         payload.status === 'published'
           ? 'Postingan berhasil dipublikasikan ke Firestore & Katalog!'
           : 'Postingan berhasil disimpan sebagai draf di Firestore.'
       );
 
-      setPreviewResult(null);
-      setRawUrlInput('');
-      setAdminTab('posts');
+      if (updateUi) {
+        setPreviewResult(null);
+        setRawUrlInput('');
+        setAdminTab('posts');
+      }
     } catch (err) {
       console.error(err);
-      addToast('error', 'Terjadi kesalahan sistem saat menyimpan postingan ke Firestore.');
+      const message = err instanceof DuplicatePostError
+        ? 'Link Telegram ini sudah ada di katalog.'
+        : 'Terjadi kesalahan sistem saat menyimpan postingan ke Firestore.';
+      if (updateUi) addToast('error', message);
+      throw err;
     } finally {
-      setIsSavingPost(false);
+      if (updateUi) setIsSavingPost(false);
     }
   };
 
@@ -487,6 +482,23 @@ function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: n
       setDeleteCandidate(null);
     } catch {
       addToast('error', 'Gagal menghapus postingan.');
+    }
+  };
+
+  const handleConfirmBulkDelete = async () => {
+    const ids = Array.from(selectedPostIds);
+    if (ids.length === 0) return;
+    setIsBulkDeleting(true);
+    try {
+      await deletePostsFromFirestore(ids);
+      setPosts((prev) => prev.filter((post) => !selectedPostIds.has(post.id)));
+      setSelectedPostIds(new Set());
+      setIsBulkDeleteOpen(false);
+      addToast('success', `${ids.length} postingan berhasil dihapus.`);
+    } catch {
+      addToast('error', 'Gagal menghapus postingan massal. Coba lagi.');
+    } finally {
+      setIsBulkDeleting(false);
     }
   };
 
@@ -766,14 +778,26 @@ function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: n
                         Daftar lengkap konten di Firestore, pengaturan status, edit, dan penghapusan
                       </p>
                     </div>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={() => setAdminTab('add-link')}
-                      leftIcon={<Plus className="w-3.5 h-3.5" />}
-                    >
-                      Tambah Link
-                    </Button>
+                    <div className="flex gap-2">
+                      {selectedPostIds.size > 0 && (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => setIsBulkDeleteOpen(true)}
+                          leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                        >
+                          Hapus {selectedPostIds.size}
+                        </Button>
+                      )}
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => setAdminTab('add-link')}
+                        leftIcon={<Plus className="w-3.5 h-3.5" />}
+                      >
+                        Tambah Link
+                      </Button>
+                    </div>
                   </div>
 
                   {/* Filter & Search Bar */}
@@ -807,6 +831,7 @@ function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: n
                         <table className="w-full text-left text-xs">
                           <thead className="bg-[#F7F8FA] border-b border-[#E5E8EC] text-[#68707A] font-semibold uppercase tracking-wider text-[11px]">
                             <tr>
+                              <th className="px-4 py-3"><input aria-label="Pilih semua postingan hasil filter" type="checkbox" checked={displayedPosts.length > 0 && displayedPosts.every((post) => selectedPostIds.has(post.id))} onChange={(event) => setSelectedPostIds((previous) => { const next = new Set(previous); displayedPosts.forEach((post) => event.target.checked ? next.add(post.id) : next.delete(post.id)); return next; })} /></th>
                               <th className="px-4 py-3">Thumbnail & Judul</th>
                               <th className="px-4 py-3">Saluran</th>
                               <th className="px-4 py-3">Status</th>
@@ -817,6 +842,7 @@ function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: n
                           <tbody className="divide-y divide-[#E5E8EC]">
                             {displayedPosts.map((post) => (
                               <tr key={post.id} className="hover:bg-[#F7F8FA]/60 transition-colors">
+                                <td className="px-4 py-3"><input aria-label={`Pilih ${post.title}`} type="checkbox" checked={selectedPostIds.has(post.id)} onChange={(event) => setSelectedPostIds((previous) => { const next = new Set(previous); event.target.checked ? next.add(post.id) : next.delete(post.id); return next; })} /></td>
                                 <td className="px-4 py-3 max-w-xs">
                                   <div className="flex items-center gap-3">
                                     <div className="w-16 h-10 rounded overflow-hidden shrink-0 border border-[#E5E8EC]">
@@ -1018,7 +1044,17 @@ function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: n
               {/* TAB 4: BULK IMPORT */}
               {adminTab === 'bulk-import' && (
                 <BulkImportView
-                  onSavePost={handleSavePost}
+                  existingPosts={uniquePosts}
+                  onSavePost={(payload) => handleSavePost(payload, false)}
+                  onImportStateChange={(isImporting) => {
+                    isBulkImportingRef.current = isImporting;
+                    if (!isImporting) {
+                      const latest = deduplicatePosts(latestFirestorePostsRef.current);
+                      setPosts(latest);
+                      setChannels(Array.from(new Set(latest.map((post) => post.channelUsername))));
+                      updateComputedStats(latest);
+                    }
+                  }}
                   onNavigateToPosts={() => setAdminTab('posts')}
                   onNavigateToPublic={() => setIsAdminView(false)}
                   adminEmail={firebaseUser?.email || AUTHORIZED_ADMIN_EMAIL}
@@ -1216,6 +1252,17 @@ function parseTelegramUrlClient(rawUrl: string): { channel: string; messageId: n
         confirmLabel="Ya, Hapus"
         cancelLabel="Batal"
         isDestructive={true}
+      />
+
+      <ConfirmDialog
+        isOpen={isBulkDeleteOpen}
+        onClose={() => setIsBulkDeleteOpen(false)}
+        onConfirm={handleConfirmBulkDelete}
+        title="Hapus Postingan Massal"
+        message={`Hapus permanen ${selectedPostIds.size} postingan terpilih dari Firestore?`}
+        confirmLabel={`Hapus ${selectedPostIds.size} Postingan`}
+        isDestructive
+        isLoading={isBulkDeleting}
       />
 
       {/* Floating Toast Notification Container */}

@@ -42,16 +42,22 @@ export const MetadataPreview: React.FC<MetadataPreviewProps> = ({
     }
     setError(null);
 
-    await onSave({
-      sourceUrl: preview.sourceUrl,
-      title: title.trim(),
-      description: description.trim() || null,
-      thumbnailUrl: thumbnailUrl.trim() || null,
-      channelUsername: preview.channelUsername,
-      channelTitle: channelTitle.trim() || preview.channelUsername,
-      messageId: preview.messageId,
-      status,
-    });
+    try {
+      await onSave({
+        sourceUrl: preview.sourceUrl,
+        title: title.trim(),
+        description: description.trim() || null,
+        thumbnailUrl: thumbnailUrl.trim() || null,
+        channelUsername: preview.channelUsername,
+        channelTitle: channelTitle.trim() || preview.channelUsername,
+        messageId: preview.messageId,
+        status,
+      });
+    } catch (saveError) {
+      setError(saveError instanceof Error && saveError.message.includes('sudah ada')
+        ? 'Link ini sudah ada di katalog.'
+        : 'Gagal menyimpan postingan. Silakan coba lagi.');
+    }
   };
 
   const isComplete = preview.extractionStatus === 'complete';

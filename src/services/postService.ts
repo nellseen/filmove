@@ -1,13 +1,13 @@
 import { 
   collection, 
   doc, 
-  getDocs, 
-  setDoc, 
   updateDoc, 
   deleteDoc, 
   onSnapshot,
   query,
   where,
+  writeBatch,
+  runTransaction,
 } from 'firebase/firestore';
 import { 
   signInWithPopup, 
@@ -21,16 +21,10 @@ import type { TelegramPost } from '../types/post';
 
 const POSTS_PATH = 'posts';
 
-// Delete all initial dummy posts from Firestore if any exist
-export async function purgeAllDummyPosts(): Promise<void> {
-  const dummyIds = ['post-1', 'post-2', 'post-3', 'post-4', 'post-5', 'post-6'];
-  for (const id of dummyIds) {
-    try {
-      const docRef = doc(db, POSTS_PATH, id);
-      await deleteDoc(docRef);
-    } catch {
-      // quiet if already deleted or doesn't exist
-    }
+export class DuplicatePostError extends Error {
+  constructor() {
+    super('Postingan dengan tautan ini sudah ada.');
+    this.name = 'DuplicatePostError';
   }
 }
 
@@ -74,9 +68,26 @@ export function subscribeToPosts(
 export async function savePostToFirestore(post: TelegramPost): Promise<void> {
   try {
     const docRef = doc(db, POSTS_PATH, post.id);
-    await setDoc(docRef, post);
+    await runTransaction(db, async (transaction) => {
+      const existing = await transaction.get(docRef);
+      if (existing.exists()) throw new DuplicatePostError();
+      transaction.set(docRef, post);
+    });
   } catch (error) {
+    if (error instanceof DuplicatePostError) throw error;
     handleFirestoreError(error, OperationType.WRITE, `${POSTS_PATH}/${post.id}`);
+  }
+}
+
+export async function deletePostsFromFirestore(postIds: string[]): Promise<void> {
+  try {
+    for (let offset = 0; offset < postIds.length; offset += 500) {
+      const batch = writeBatch(db);
+      postIds.slice(offset, offset + 500).forEach((id) => batch.delete(doc(db, POSTS_PATH, id)));
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, POSTS_PATH);
   }
 }
 
