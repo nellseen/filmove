@@ -308,7 +308,7 @@ apiApp.post('/api/v1/admin/posts', (req: Request, res: Response) => {
   }
 
   const newPost: TelegramPost = {
-    id: `post-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+    id: req.body.id || `post-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
     sourceUrl: parsed.normalizedUrl,
     channelUsername: channelUsername || parsed.channel,
     channelTitle: channelTitle || channelUsername || parsed.channel,

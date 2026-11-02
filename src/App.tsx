@@ -134,6 +134,17 @@ export function App() {
     };
   }, []);
 
+// Helper to ensure all post arrays maintain strictly unique keys
+function deduplicatePosts(items: TelegramPost[]): TelegramPost[] {
+  const map = new Map<string, TelegramPost>();
+  for (const item of items) {
+    if (item && item.id && !map.has(item.id)) {
+      map.set(item.id, item);
+    }
+  }
+  return Array.from(map.values());
+}
+
   // 2. Real-time Firestore subscription
   useEffect(() => {
     setIsLoading(true);
@@ -141,11 +152,12 @@ export function App() {
 
     try {
       unsubscribeFirestore = subscribeToPosts((firestorePosts) => {
-        setPosts(firestorePosts || []);
-        const uniqueCh = Array.from(new Set((firestorePosts || []).map((p) => p.channelUsername)));
+        const unique = deduplicatePosts(firestorePosts || []);
+        setPosts(unique);
+        const uniqueCh = Array.from(new Set(unique.map((p) => p.channelUsername)));
         setChannels(uniqueCh);
         setIsLoading(false);
-        updateComputedStats(firestorePosts || []);
+        updateComputedStats(unique);
       }, isAdminView);
     } catch (err) {
       console.warn('[Firestore] error:', err);
@@ -158,11 +170,12 @@ export function App() {
   }, [isAdminView]);
 
   const updateComputedStats = (postList: TelegramPost[]) => {
-    const totalPosts = postList.length;
-    const publishedPosts = postList.filter((p) => p.status === 'published').length;
-    const draftPosts = postList.filter((p) => p.status === 'draft').length;
-    const archivedPosts = postList.filter((p) => p.status === 'archived').length;
-    const uniqueChannels = new Set(postList.map((p) => p.channelUsername)).size;
+    const uniqueList = deduplicatePosts(postList);
+    const totalPosts = uniqueList.length;
+    const publishedPosts = uniqueList.filter((p) => p.status === 'published').length;
+    const draftPosts = uniqueList.filter((p) => p.status === 'draft').length;
+    const archivedPosts = uniqueList.filter((p) => p.status === 'archived').length;
+    const uniqueChannels = new Set(uniqueList.map((p) => p.channelUsername)).size;
     setStats({ totalPosts, publishedPosts, draftPosts, archivedPosts, uniqueChannels });
   };
 
@@ -172,9 +185,10 @@ export function App() {
       const res = await fetch('/api/v1/posts?status=all');
       if (res.ok) {
         const json = await res.json();
-        setPosts(json.data || []);
+        const unique = deduplicatePosts(json.data || []);
+        setPosts(unique);
         if (json.channels) setChannels(json.channels);
-        updateComputedStats(json.data || []);
+        updateComputedStats(unique);
       }
     } catch (e) {
       console.error(e);
@@ -183,25 +197,30 @@ export function App() {
     }
   };
 
+  // Strictly deduplicated list of posts
+  const uniquePosts = React.useMemo(() => deduplicatePosts(posts), [posts]);
+
   // Filtered posts based on active tab and query
-  const displayedPosts = posts.filter((post) => {
-    if (!isAdminView && post.status !== 'published') return false;
-    if (isAdminView && adminStatusFilter !== 'all' && post.status !== adminStatusFilter) return false;
+  const displayedPosts = React.useMemo(() => {
+    return uniquePosts.filter((post) => {
+      if (!isAdminView && post.status !== 'published') return false;
+      if (isAdminView && adminStatusFilter !== 'all' && post.status !== adminStatusFilter) return false;
 
-    const query = (isAdminView ? adminSearch : searchQuery).toLowerCase().trim();
-    if (query) {
-      const matchesTitle = post.title.toLowerCase().includes(query);
-      const matchesDesc = post.description?.toLowerCase().includes(query);
-      const matchesChannel = post.channelUsername.toLowerCase().includes(query);
-      if (!matchesTitle && !matchesDesc && !matchesChannel) return false;
-    }
+      const query = (isAdminView ? adminSearch : searchQuery).toLowerCase().trim();
+      if (query) {
+        const matchesTitle = post.title.toLowerCase().includes(query);
+        const matchesDesc = post.description?.toLowerCase().includes(query);
+        const matchesChannel = post.channelUsername.toLowerCase().includes(query);
+        if (!matchesTitle && !matchesDesc && !matchesChannel) return false;
+      }
 
-    if (!isAdminView && selectedChannel && post.channelUsername.toLowerCase() !== selectedChannel.toLowerCase()) {
-      return false;
-    }
+      if (!isAdminView && selectedChannel && post.channelUsername.toLowerCase() !== selectedChannel.toLowerCase()) {
+        return false;
+      }
 
-    return true;
-  });
+      return true;
+    });
+  }, [uniquePosts, isAdminView, adminStatusFilter, adminSearch, searchQuery, selectedChannel]);
 
   // Pagination calculation
   const totalPages = Math.ceil(displayedPosts.length / itemsPerPage) || 1;
@@ -328,13 +347,14 @@ export function App() {
         await fetch('/api/v1/admin/posts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ ...payload, id: newPost.id }),
         });
       } catch (err) {
         // quiet fallback
       }
 
-      setPosts((prev) => [newPost, ...prev]);
+      // Update state with deduplication to prevent duplicate key warning
+      setPosts((prev) => deduplicatePosts([newPost, ...prev]));
 
       addToast(
         'success',
@@ -632,11 +652,11 @@ export function App() {
                         onClick={() => setAdminTab('posts')}
                         className="text-xs text-[#2563EB] font-medium hover:underline cursor-pointer"
                       >
-                        Lihat Semua ({posts.length})
+                        Lihat Semua ({uniquePosts.length})
                       </button>
                     </div>
                     <div className="divide-y divide-[#E5E8EC]">
-                      {posts.slice(0, 4).map((post) => (
+                      {uniquePosts.slice(0, 4).map((post) => (
                         <div key={post.id} className="p-4 flex items-center justify-between gap-4">
                           <div className="flex items-center gap-3 min-w-0">
                             <div className="w-16 h-10 rounded overflow-hidden shrink-0 border border-[#E5E8EC]">
